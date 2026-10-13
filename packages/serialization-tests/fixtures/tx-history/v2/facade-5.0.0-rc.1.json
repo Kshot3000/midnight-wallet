@@ -1,0 +1,24 @@
+{
+  "train": "facade-5.0.0-rc.1",
+  "name": "@midnightntwrk/wallet-sdk-abstractions",
+  "version": "3.0.0-rc.1",
+  "schemaFrom": {
+    "name": "@midnightntwrk/wallet-sdk-facade",
+    "version": "5.0.0-rc.1",
+    "ledgerDep": "@midnightntwrk/ledger-v9@1.0.0-rc.5"
+  },
+  "expected": {
+    "entryCount": 4,
+    "hashes": [
+      "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+      "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2",
+      "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3"
+    ],
+    "statuses": ["SUCCESS", "FAILURE", "absent", "absent"],
+    "fees": ["1234", null, "absent", "absent"],
+    "identifiersPresent": [true, true, true, true],
+    "lifecycles": ["finalized", "finalized", "pending", "rejected"]
+  },
+  "serialized": "{\"version\":\"v2\",\"entries\":[{\"hash\":\"c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0\",\"identifiers\":[\"identifier-1\",\"identifier-2\"],\"protocolVersion\":1,\"status\":\"SUCCESS\",\"timestamp\":\"2026-03-01T12:00:00.000Z\",\"fees\":\"1234\",\"lifecycle\":{\"status\":\"finalized\",\"finalizedBlock\":{\"hash\":\"f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0\",\"height\":4321,\"timestamp\":\"2026-03-01T12:00:00.000Z\"}},\"shielded\":{\"receivedCoins\":[{\"type\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"nonce\":\"abababababababababababababababababababababababababababababababab\",\"value\":\"100\",\"mtIndex\":\"0\"}],\"spentCoins\":[{\"type\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"nonce\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"value\":\"250\",\"mtIndex\":\"1\"}]}},{\"hash\":\"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1\",\"identifiers\":[\"identifier-3\"],\"protocolVersion\":1,\"status\":\"FAILURE\",\"timestamp\":\"2026-03-01T12:00:00.000Z\",\"fees\":null,\"lifecycle\":{\"status\":\"finalized\",\"finalizedBlock\":{\"hash\":\"f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0\",\"height\":4321,\"timestamp\":\"2026-03-01T12:00:00.000Z\"}},\"unshielded\":{\"id\":7,\"createdUtxos\":[{\"value\":\"1000\",\"owner\":\"owner-address\",\"tokenType\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"intentHash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"outputIndex\":0}],\"spentUtxos\":[]}},{\"hash\":\"e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2\",\"identifiers\":[\"identifier-4\"],\"lifecycle\":{\"status\":\"pending\",\"submittedAt\":\"2026-03-01T12:00:00.000Z\"},\"dust\":{\"receivedUtxos\":[{\"initialValue\":\"0\",\"nonce\":\"42\",\"seq\":0,\"backingNight\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"mtIndex\":\"0\"}],\"spentUtxos\":[]}},{\"hash\":\"f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3\",\"identifiers\":[\"identifier-5\"],\"lifecycle\":{\"status\":\"rejected\",\"rejectedAt\":\"2026-03-01T12:00:00.000Z\",\"reason\":\"fixture: rejected by node\"}}]}"
+}

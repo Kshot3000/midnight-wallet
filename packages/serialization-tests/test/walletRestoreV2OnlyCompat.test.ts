@@ -174,6 +174,31 @@ describe('unshielded snapshots written by published releases, opened by a V2-onl
         );
       });
 
+      // Reading back its own output is reading a `v2` payload, which is the half of the step nothing else exercises:
+      // the upgrade must leave an already-tagged key alone rather than tagging it twice.
+      it('should open its own re-written v2 snapshot to the same content', async () => {
+        const first = await openWallet<UnshieldedState>(
+          fixture,
+          restoring((s) => unshieldedV2Only().restore(s)),
+        );
+        const second = await openWallet<UnshieldedState>(
+          { ...fixture, serialized: first.reserialized },
+          restoring((s) => unshieldedV2Only().restore(s)),
+        );
+
+        expect(keyOf(second.reserialized)).toEqual(keyOf(first.reserialized));
+        expect(project(fixture, unshieldedValue(fixture, second.state, second.reserialized))).toEqual(
+          project(fixture, unshieldedValue(fixture, first.state, first.reserialized)),
+        );
+      });
+    },
+  );
+});
+
+describe('unshielded snapshots stored before the key was tagged, opened by a V2-only build', () => {
+  describe.each(fixturesFor('unshielded').filter((fixture) => declaredVersionOf(fixture.serialized) === 'v1'))(
+    '$id',
+    (fixture: Fixture) => {
       it('should write it back at the version the V2 writer owns, which is not the one it read', async () => {
         const { reserialized } = await openWallet<UnshieldedState>(
           fixture,
@@ -199,23 +224,36 @@ describe('unshielded snapshots written by published releases, opened by a V2-onl
         expect(keyOf(reserialized)).toEqual({ tag: 'schnorr', value: keyOf(fixture.serialized) });
         expect(addressOf(reserialized)).toBe(addressOf(fixture.serialized));
       });
+    },
+  );
+});
 
-      // Reading back its own output is reading a `v2` payload, which is the half of the step nothing else exercises:
-      // the upgrade must leave an already-tagged key alone rather than tagging it twice.
-      it('should open its own re-written v2 snapshot to the same content', async () => {
-        const first = await openWallet<UnshieldedState>(
+// A payload the V2 writer stored is already in the shape that variant writes, so there is nothing to upgrade. Handed
+// back, it must come out exactly as it went in: an upgrade step re-run over it would tag the key a second time, and a
+// reader that re-derived the key or address would change the wallet's identity while the snapshot stayed well-formed.
+describe('unshielded snapshots stored with a tagged key, opened by a V2-only build', () => {
+  describe.each(fixturesFor('unshielded').filter((fixture) => declaredVersionOf(fixture.serialized) !== 'v1'))(
+    '$id',
+    (fixture: Fixture) => {
+      it('should write it back at the version it was stored in', async () => {
+        const { reserialized } = await openWallet<UnshieldedState>(
           fixture,
           restoring((s) => unshieldedV2Only().restore(s)),
         );
-        const second = await openWallet<UnshieldedState>(
-          { ...fixture, serialized: first.reserialized },
+
+        expect(declaredVersionOf(fixture.serialized)).toBe(currentVersionOf.v2['unshielded']);
+        expect(declaredVersionOf(reserialized)).toBe(currentVersionOf.v2['unshielded']);
+      });
+
+      it('should keep the stored verifying key and its address exactly as they were', async () => {
+        const { reserialized } = await openWallet<UnshieldedState>(
+          fixture,
           restoring((s) => unshieldedV2Only().restore(s)),
         );
 
-        expect(keyOf(second.reserialized)).toEqual(keyOf(first.reserialized));
-        expect(project(fixture, unshieldedValue(fixture, second.state, second.reserialized))).toEqual(
-          project(fixture, unshieldedValue(fixture, first.state, first.reserialized)),
-        );
+        expect(keyOf(fixture.serialized)).toMatchObject({ tag: 'schnorr' });
+        expect(keyOf(reserialized)).toEqual(keyOf(fixture.serialized));
+        expect(addressOf(reserialized)).toBe(addressOf(fixture.serialized));
       });
     },
   );

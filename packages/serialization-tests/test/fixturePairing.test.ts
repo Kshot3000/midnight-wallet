@@ -17,11 +17,9 @@ import { SURFACES, fixturesFor, isHandedTo } from './fixtures.js';
 /**
  * Which reader gets handed which payload, asserted now rather than when it first matters.
  *
- * `isHandedTo` decides nothing today: every frozen payload was written below the fork, so every reader is handed every
- * one of them and the checks that use it are unchanged. It exists for the day the corpus grows a payload written past
- * the fork — the first captured ledger-v9 release — at which point it keeps the V1 reader away from a shape routing
- * would never give it. Logic that does nothing until a distant day is logic that rots quietly before it, so it is
- * pinned here against payloads built for the purpose.
+ * `isHandedTo` keeps the V1 reader away from the payloads the ledger-v9 train wrote from the fork — a shape routing
+ * would never give it — and hands every other payload to both readers. The rule is pinned here against payloads built
+ * for the purpose, and the corpus below against the frozen fixtures it actually holds.
  */
 
 const forkVersion = ProtocolVersion.V9NativeForkVersion;
@@ -75,15 +73,24 @@ describe('which reader a stored snapshot could be handed', () => {
 });
 
 describe('the corpus as it stands today', () => {
-  // States the premise the gates currently rest on. When this stops holding, a v9 payload has been captured and the
-  // pairing above starts doing work — which is the moment to check that the gates still cover what they should.
-  it('is written entirely below the fork, so no reader is skipped for any fixture yet', () => {
+  // States exactly which payloads the V1 reader is kept away from: the ones the ledger-v9 train wrote from the fork.
+  // Listing them rather than counting them means a fixture added past the fork, or one wrongly read as past it, changes
+  // this list and has to be looked at — the moment to check that the gates still cover what they should.
+  it('keeps the V1 reader away from the payloads written past the fork, and from nothing else', () => {
     const skipped = SURFACES.flatMap((surface) =>
       fixturesFor(surface)
         .filter((fixture) => !isHandedTo('v1', surface, fixture.serialized))
         .map((fixture) => fixture.id),
     );
 
-    expect(skipped).toEqual([]);
+    expect(skipped).toEqual([
+      'shielded/v1/facade-5.0.0-rc.1-v2-deep',
+      'shielded/v1/facade-5.0.0-rc.1-v2-pending',
+      'shielded/v1/facade-5.0.0-rc.1-v2-receiver',
+      'shielded/v1/facade-5.0.0-rc.1-v2',
+      'unshielded/v2/facade-5.0.0-rc.1-minimal',
+      'unshielded/v2/facade-5.0.0-rc.1',
+      'dust/v1/facade-5.0.0-rc.1-v2',
+    ]);
   });
 });

@@ -11,7 +11,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 import { describe, expect, it } from 'vitest';
-import { SURFACES, WRITERS, fixturesFor, isHandedTo, type Fixture, type Surface, type Writer } from './fixtures.js';
+import {
+  SURFACES,
+  WRITERS,
+  declaredVersionOf,
+  fixturesFor,
+  isHandedTo,
+  type Fixture,
+  type Surface,
+  type Writer,
+} from './fixtures.js';
 import { rewriteWithCurrentCode } from './rewrite.js';
 
 /**
@@ -94,8 +103,13 @@ const contentOf = (payload: unknown, key: string | undefined = contentKeyOf(payl
  * below only so that the dedicated case beneath it can make the stronger claim: the value inside the tag is the very
  * string that was stored, not something re-derived.
  */
-const isTheUnshieldedKeyUpgrade = (writer: Writer, surface: Surface, path: string): boolean =>
-  writer === 'v2' && surface === 'unshielded' && path === 'publicKey.publicKey';
+const isTheUnshieldedKeyUpgrade = (writer: Writer, surface: Surface, path: string, stored: string): boolean =>
+  writer === 'v2' &&
+  surface === 'unshielded' &&
+  path === 'publicKey.publicKey' &&
+  // Only a payload stored before the key was tagged is upgraded. One stored already tagged must keep its key as it is,
+  // so the exemption must not cover it: a key tagged a second time would otherwise pass this check unseen.
+  declaredVersionOf(stored) === 'v1';
 
 /** Paths whose values differ between a stored payload and what this build writes back for it. */
 const changedPaths = (stored: unknown, written: unknown): readonly string[] => {
@@ -126,7 +140,7 @@ describe('reading a stored payload and writing it back changes none of its value
       const rewritten = await rewriteWithCurrentCode(writer, surface, fixture.serialized);
 
       const changed = changedPaths(JSON.parse(fixture.serialized), JSON.parse(rewritten)).filter(
-        (path) => !isTheUnshieldedKeyUpgrade(writer, surface, path),
+        (path) => !isTheUnshieldedKeyUpgrade(writer, surface, path, fixture.serialized),
       );
 
       expect({ id: fixture.id, changed }).toEqual({ id: fixture.id, changed: [] });
@@ -142,7 +156,11 @@ describe('reading a stored payload and writing it back changes none of its value
  * identity while every gate stayed green.
  */
 describe('the one value a writer may change carries the value it replaced', () => {
-  const unshieldedFixtures = fixturesFor('unshielded');
+  // Only a payload stored before the key was tagged has a value to replace. One the V2 writer stored already carries
+  // the tag, and the path check above holds it to coming back unchanged.
+  const unshieldedFixtures = fixturesFor('unshielded').filter(
+    (fixture) => declaredVersionOf(fixture.serialized) === 'v1',
+  );
 
   it('should have unshielded fixtures to check', () => {
     expect(unshieldedFixtures.length).toBeGreaterThan(0);

@@ -177,9 +177,8 @@ export const baselineFilesFor = (writer: Writer, surface: Surface): readonly str
  * The combination that is left out is the V1 reader against a payload written past the fork. Routing never produces it,
  * no single-variant build produces it either, and asking for it would hold the V1 reader to a shape it was never going
  * to meet: for shielded and dust the twins share one format version, so such a payload decodes against the V1 schema
- * and the V2-only fields on it are simply not V1's to account for. Every frozen payload today was written by a V1-era
- * release, so nothing is skipped yet; this exists so the first captured ledger-v9 fixture does not turn the
- * preservation gates red for a question routing forbids.
+ * and the V2-only fields on it are simply not V1's to account for. The payloads the ledger-v9 train wrote from the fork
+ * are the ones this skips, so they do not turn the preservation gates red for a question routing forbids.
  *
  * The two single-writer surfaces are not routed at all and are read the same way whichever writer a case is filed
  * under, so they are handed to both.

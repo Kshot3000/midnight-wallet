@@ -13,9 +13,17 @@
 import { InMemoryTransactionHistoryStorage } from '@midnightntwrk/wallet-sdk-abstractions';
 import { WalletEntrySchema, mergeWalletEntries } from '@midnightntwrk/wallet-sdk-facade';
 import { describe, expect, it } from 'vitest';
-import { fixturesFor } from './fixtures.js';
+import { declaredVersionOf, fixturesFor, type Fixture } from './fixtures.js';
 
 const fixtures = fixturesFor('tx-history');
+
+/** The entries a payload holds, as stored: a `v1` history is a bare array of them, a `v2` one wraps them in an envelope. */
+const storedEntries = (fixture: Fixture): readonly Record<string, unknown>[] => {
+  const payload: unknown = JSON.parse(fixture.serialized);
+  return Array.isArray(payload)
+    ? (payload as readonly Record<string, unknown>[])
+    : (payload as { readonly entries: readonly Record<string, unknown>[] }).entries;
+};
 
 /** A fee as a payload holds it: a value, an explicit `null`, or no `fees` at all. `?? null` would fold the last two. */
 const feeAsStored = (entry: Record<string, unknown>): { readonly fee: string | null } | 'absent' => {
@@ -44,15 +52,18 @@ describe('transaction histories written by published releases', () => {
     it('should preserve the on-chain status of every entry', async () => {
       const entries = await restore().getAll();
 
-      expect(entries.map((entry) => entry.status)).toEqual(fixture.expected['statuses']);
+      // An entry that has not run yet has no status; the fixture records that absence by name.
+      expect(entries.map((entry) => entry.status ?? 'absent')).toEqual(fixture.expected['statuses']);
     });
 
     it('should preserve the fees of every entry, telling an explicit null from a fee it never recorded', async () => {
       const entries = await restore().getAll();
-      const written = JSON.parse(fixture.serialized) as readonly Record<string, unknown>[];
+      const written = storedEntries(fixture);
 
+      // This half compares values only, so a fee never recorded and an explicit `null` both read as `null` here; the
+      // half below is the one that tells them apart, against the payload's own bytes.
       const asWritten = (fixture.expected['fees'] as readonly (string | null)[]).map((fee) =>
-        fee === null ? null : BigInt(fee),
+        fee === null || fee === 'absent' ? null : BigInt(fee),
       );
       expect(entries.map((entry) => entry.fees ?? null)).toEqual(asWritten);
       expect(entries.map(feeAsStored)).toEqual(written.map(feeAsStored));
@@ -63,14 +74,49 @@ describe('transaction histories written by published releases', () => {
 
       expect(entries.map((entry) => entry.identifiers.length > 0)).toEqual(fixture.expected['identifiersPresent']);
     });
+  });
+});
 
-    // Every entry in these payloads was written from the sync path, after the indexer returned the transaction inside
-    // a block. `finalized` is therefore the only honest lifecycle, whatever the entry's `status` — a FAILURE reached a
-    // block too, it just failed once it ran.
+describe('transaction histories written before entries carried a lifecycle', () => {
+  // Every entry in these payloads was written from the sync path, after the indexer returned the transaction inside
+  // a block. `finalized` is therefore the only honest lifecycle, whatever the entry's `status` — a FAILURE reached a
+  // block too, it just failed once it ran.
+  describe.each(fixtures.filter((fixture) => declaredVersionOf(fixture.serialized) === 'v1'))('$id', (fixture) => {
     it('should give every entry a finalized lifecycle, whatever its status', async () => {
-      const entries = await restore().getAll();
+      const entries = await InMemoryTransactionHistoryStorage.restore(
+        fixture.serialized,
+        WalletEntrySchema,
+        mergeWalletEntries,
+      ).getAll();
 
       expect(entries.map((entry) => entry.lifecycle.status)).toEqual(entries.map(() => 'finalized'));
+    });
+  });
+});
+
+describe('transaction histories written with a lifecycle on every entry', () => {
+  const withLifecycles = fixtures.filter((fixture) => declaredVersionOf(fixture.serialized) !== 'v1');
+
+  describe.each(withLifecycles)('$id', (fixture) => {
+    const restore = () =>
+      InMemoryTransactionHistoryStorage.restore(fixture.serialized, WalletEntrySchema, mergeWalletEntries).getAll();
+
+    // The upgrade from `v1` fills a lifecycle in only where one is missing. A payload that already carries one must
+    // keep it: a pending entry read back as finalized would show a transaction as landed that never reached a block.
+    it('should keep the lifecycle every entry was written with', async () => {
+      const entries = await restore();
+
+      expect(entries.map((entry) => entry.lifecycle.status)).toEqual(fixture.expected['lifecycles']);
+    });
+
+    // The status alone would pass a reader that kept the tag and lost the record behind it: the block a transaction
+    // landed in, when it was submitted, why it was rejected.
+    it('should keep everything each lifecycle recorded, byte for byte', async () => {
+      const entries = await restore();
+
+      expect(JSON.parse(JSON.stringify(entries.map((entry) => entry.lifecycle)))).toEqual(
+        storedEntries(fixture).map((entry) => entry['lifecycle']),
+      );
     });
   });
 });

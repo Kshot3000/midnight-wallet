@@ -19,7 +19,7 @@ import { UnshieldedWallet, type DefaultUnshieldedConfiguration } from '@midnight
 import { TransactionHistory as UnshieldedTransactionHistory } from '@midnightntwrk/wallet-sdk-unshielded-wallet/v2';
 import { Either } from 'effect';
 import { describe, expect, it } from 'vitest';
-import { currentVersionOf, declaredVersionOf, fixturesFor } from './fixtures.js';
+import { currentVersionOf, declaredVersionOf, fixturesFor, isHandedTo } from './fixtures.js';
 import {
   dustValue,
   openWallet,
@@ -157,15 +157,16 @@ describe('unshielded snapshots written by published releases, opened through the
       );
     });
 
-    // The one surface whose two writers are on different format versions. A snapshot that routes to V1 must come back
-    // as `v1`: were routing to hand it to V2, it would come back `v2` with a retyped key, and the next V1 build to
-    // read it would refuse it.
+    // The one surface whose two writers are on different format versions. A snapshot written below the fork routes to
+    // V1 and must come back as `v1`: were routing to hand it to V2, it would come back `v2` with a retyped key, and the
+    // next V1 build to read it would refuse it. One written from the fork routes to V2 and comes back as `v2`.
     it('should write the snapshot back at the version the variant it routed to owns', async () => {
       const { reserialized } = await openWallet<UnshieldedState>(fixture, (s) =>
         UnshieldedWallet(unshieldedConfiguration()).tryRestore(s),
       );
+      const routedTo = isHandedTo('v1', 'unshielded', fixture.serialized) ? 'v1' : 'v2';
 
-      expect(declaredVersionOf(reserialized)).toBe(currentVersionOf.v1['unshielded']);
+      expect(declaredVersionOf(reserialized)).toBe(currentVersionOf[routedTo]['unshielded']);
     });
 
     it('should open its own re-written snapshot to the same content', async () => {

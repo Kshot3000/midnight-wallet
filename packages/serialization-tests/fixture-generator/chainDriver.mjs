@@ -56,9 +56,19 @@ export const GENESIS_TIME = new Date('2026-02-01T00:00:00.000Z');
 export const BLOCK_SECONDS = 6;
 export const DEEP_ROUNDS = 12;
 
+// A package from the 5.0 train on declares two ledgers, one per variant: ledger-v8 for the V1 variant below `forks.v9`
+// and ledger-v9 for the V2 variant from it. Such a train is driven on its V2 variant, the one that runs from the fork,
+// so its ledger is ledger-v9. Every earlier package declares a single ledger.
+const LEDGER_V9 = '@midnightntwrk/ledger-v9';
+
+export const ledgerNameOf = (pkgJson) => {
+  const ledgers = Object.keys(pkgJson.dependencies ?? {}).filter((d) => d.includes('ledger'));
+  return ledgers.includes(LEDGER_V9) ? LEDGER_V9 : ledgers[0];
+};
+
 export const ledgerFor = async (alias) => {
   const pkgJson = JSON.parse(readFileSync(path.join(HERE, 'node_modules', alias, 'package.json'), 'utf8'));
-  const ledgerName = Object.keys(pkgJson.dependencies ?? {}).find((d) => d.includes('ledger'));
+  const ledgerName = ledgerNameOf(pkgJson);
   const resolved = createRequire(path.join(HERE, 'node_modules', alias, 'dist', 'index.js')).resolve(ledgerName);
   return import(pathToFileURL(resolved));
 };

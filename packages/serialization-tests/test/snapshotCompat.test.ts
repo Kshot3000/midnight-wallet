@@ -84,8 +84,8 @@ const shieldedReaders = [
 ];
 
 describe.each(shieldedReaders)('shielded snapshots written by published releases, read by $reader', (reader) => {
-  // Only the payloads routing would hand this reader: see `isHandedTo`. Today that is all of them, because
-  // every frozen payload was written below the fork.
+  // Only the payloads routing would hand this reader: see `isHandedTo`. The V1 reader is not handed the ones
+  // the ledger-v9 train wrote from the fork.
   const fixtures = fixturesFor('shielded').filter((fixture) =>
     isHandedTo(reader.writer, 'shielded', fixture.serialized),
   );
@@ -132,8 +132,8 @@ const unshieldedReaders = [
 ];
 
 describe.each(unshieldedReaders)('unshielded snapshots written by published releases, read by $reader', (reader) => {
-  // Only the payloads routing would hand this reader: see `isHandedTo`. Today that is all of them, because
-  // every frozen payload was written below the fork.
+  // Only the payloads routing would hand this reader: see `isHandedTo`. The V1 reader is not handed the ones
+  // the ledger-v9 train wrote from the fork.
   const fixtures = fixturesFor('unshielded').filter((fixture) =>
     isHandedTo(reader.writer, 'unshielded', fixture.serialized),
   );
@@ -193,8 +193,8 @@ const backingNightBy: Record<string, (fixture: Fixture) => readonly string[]> = 
 };
 
 describe.each(dustReaders)('dust snapshots written by published releases, read by $reader', (reader) => {
-  // Only the payloads routing would hand this reader: see `isHandedTo`. Today that is all of them, because
-  // every frozen payload was written below the fork.
+  // Only the payloads routing would hand this reader: see `isHandedTo`. The V1 reader is not handed the ones
+  // the ledger-v9 train wrote from the fork.
   const fixtures = fixturesFor('dust').filter((fixture) => isHandedTo(reader.writer, 'dust', fixture.serialized));
 
   it('should have fixtures to restore', () => {

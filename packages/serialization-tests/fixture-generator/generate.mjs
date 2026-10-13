@@ -40,6 +40,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import {
   ledgerFor,
+  ledgerNameOf,
   runScenario,
   SEEDS,
   TOKEN_A,
@@ -59,7 +60,7 @@ const loadDist = (alias, file) => import(pathToFileURL(path.join(HERE, 'node_mod
 
 const pkgMeta = (alias) => {
   const pkgJson = JSON.parse(readFileSync(path.join(HERE, 'node_modules', alias, 'package.json'), 'utf8'));
-  const ledgerName = Object.keys(pkgJson.dependencies ?? {}).find((d) => d.includes('ledger'));
+  const ledgerName = ledgerNameOf(pkgJson);
   const ledgerDep = ledgerName === undefined ? undefined : `${ledgerName}@${pkgJson.dependencies[ledgerName]}`;
   return { name: pkgJson.name, version: pkgJson.version, ledgerDep };
 };
@@ -99,11 +100,17 @@ const scenarioFor = async (shieldedAlias, deep = false) => {
 };
 
 // --- shielded ----------------------------------------------------------------------------------
-const generateShieldedSet = async (train, alias, { family }) => {
+// `variant` picks which of a train's twin trees writes the snapshot. A train on ledger-v9 is written by its V2 variant,
+// whose sync stamps the protocol version the chain reports; `protocolVersion` is that version. Without it a V2 snapshot
+// would declare the variant's floor, which routing hands to the V1 reader — so it would not be the shape under test.
+const generateShieldedSet = async (train, alias, { family, variant = 'v1', protocolVersion }) => {
   const L = await ledgerFor(alias);
-  const { CoreWallet } = await loadDist(alias, 'v1/CoreWallet.js');
-  const Ser = await loadDist(alias, 'v1/Serialization.js');
-  const capability = Ser.makeDefaultV1SerializationCapability();
+  const { CoreWallet } = await loadDist(alias, `${variant}/CoreWallet.js`);
+  const Ser = await loadDist(alias, `${variant}/Serialization.js`);
+  const capability =
+    variant === 'v2' ? Ser.makeDefaultV2SerializationCapability() : Ser.makeDefaultV1SerializationCapability();
+  const stamp = (wallet) =>
+    protocolVersion === undefined ? wallet : CoreWallet.withProtocolVersion(wallet, protocolVersion);
   const { scenario } = await scenarioFor(alias, false);
 
   const replay = (wallet, keys, eventBytes) => {
@@ -117,13 +124,15 @@ const generateShieldedSet = async (train, alias, { family }) => {
   const receiverKeys = L.ZswapSecretKeys.fromSeed(SEEDS.shieldedReceiver);
 
   const progress = (wallet) =>
-    CoreWallet.updateProgress(wallet, {
-      appliedIndex: BigInt(scenario.allEventBytes.length),
-      highestRelevantWalletIndex: BigInt(scenario.allEventBytes.length),
-      highestIndex: BigInt(scenario.allEventBytes.length),
-      highestRelevantIndex: BigInt(scenario.allEventBytes.length),
-      isConnected: false,
-    });
+    stamp(
+      CoreWallet.updateProgress(wallet, {
+        appliedIndex: BigInt(scenario.allEventBytes.length),
+        highestRelevantWalletIndex: BigInt(scenario.allEventBytes.length),
+        highestIndex: BigInt(scenario.allEventBytes.length),
+        highestRelevantIndex: BigInt(scenario.allEventBytes.length),
+        isConnected: false,
+      }),
+    );
 
   const senderSynced = progress(
     replay(CoreWallet.initEmpty(senderKeys, NETWORK_ID), senderKeys, scenario.allEventBytes),
@@ -191,7 +200,9 @@ const generateShieldedSet = async (train, alias, { family }) => {
 
   // Deep tree: many interleaved mints and confirmed spends → gappy commitment tree.
   const { scenario: deepScenario } = await scenarioFor(alias, true);
-  const deepSender = replay(CoreWallet.initEmpty(senderKeys, NETWORK_ID), senderKeys, deepScenario.allEventBytes);
+  const deepSender = stamp(
+    replay(CoreWallet.initEmpty(senderKeys, NETWORK_ID), senderKeys, deepScenario.allEventBytes),
+  );
   const deepCoinCount = deepSender.state.coins.size;
   const deepFirstFree = String(deepSender.state.firstFree);
   emit('shielded-deep', deepSender, {
@@ -282,14 +293,105 @@ const generateUnshieldedSet = async (train, alias) => {
   );
 };
 
-// --- dust ---------------------------------------------------------------------------------------
-const generateDust = async (train, alias, shAlias, { flatDist = false } = {}) => {
+// The V2 variant's unshielded wallet, which differs from the V1 one in every step that builds it: its key is derived
+// from a secret tagged with its signature kind, a booked coin carries the expiry of the transaction it was booked for,
+// and the wallet is assembled by `CoreWallet` rather than as a bare object. The snapshot it writes is the `v2` format.
+const generateUnshieldedSetV2 = async (train, alias, { protocolVersion }) => {
   const L = await ledgerFor(alias);
-  const prefix = flatDist ? '' : 'v1/';
+  const { UnshieldedState, UtxoWithMeta } = await loadDist(alias, 'v2/UnshieldedState.js');
+  const { CoreWallet } = await loadDist(alias, 'v2/CoreWallet.js');
+  const Ser = await loadDist(alias, 'v2/Serialization.js');
+  const capability = Ser.makeDefaultV2SerializationCapability();
+  const KeyStore = await loadDist(alias, 'KeyStore.js');
+  const publicKey = KeyStore.PublicKey.fromKeyStore(
+    KeyStore.createKeystore({ kind: 'schnorr', secret: SEEDS.nightBip340 }, NETWORK_ID),
+  );
+
+  const nightToken = L.nativeToken().raw ?? L.nativeToken();
+  const mkUtxo = (value, type, outputNo, intentHashByte, registered) =>
+    new UtxoWithMeta({
+      utxo: {
+        value,
+        owner: publicKey.addressHex,
+        type,
+        intentHash: String(intentHashByte).padStart(2, '0').repeat(32),
+        outputNo,
+      },
+      meta: { ctime: FIXED_DATE, registeredForDustGeneration: registered },
+    });
+
+  const nightUtxo = mkUtxo(NIGHT_VALUE, nightToken, 0, 55, true);
+  const customUtxo = mkUtxo(CUSTOM_UNSHIELDED_VALUE, CUSTOM_UNSHIELDED, 1, 56, false);
+  const pendingUtxo = mkUtxo(4200n, CUSTOM_UNSHIELDED, 0, 57, false);
+  // A booking that is still live whenever the fixture is read, so a restore keeps it on the pending side. A real
+  // transaction's TTL is hours, which would have every later read release the coin and leave the pending side of the
+  // snapshot untested.
+  const BOOKING_TTL = new Date('2100-01-01T00:00:00.000Z');
+
+  const emit = (name, wallet, expected) => {
+    const serialized = capability.serialize(wallet);
+    selfCheck(`${alias} ${name}`, capability.deserialize(serialized));
+    writeFixture(train, name, {
+      train,
+      ...pkgMeta(alias),
+      generatedWith: {
+        fixedDate: FIXED_DATE.toISOString(),
+        bookingTtl: BOOKING_TTL.toISOString(),
+        protocolVersion: String(protocolVersion),
+      },
+      snapshotFields: Object.keys(JSON.parse(serialized)),
+      expected,
+      serialized,
+    });
+  };
+
+  emit(
+    'unshielded',
+    CoreWallet.restore(
+      UnshieldedState.restore([nightUtxo, customUtxo], [{ utxo: pendingUtxo, ttl: BOOKING_TTL }]),
+      publicKey,
+      { appliedId: 5n, highestTransactionId: 5n },
+      protocolVersion,
+      NETWORK_ID,
+    ),
+    {
+      networkId: NETWORK_ID,
+      nightToken,
+      customToken: CUSTOM_UNSHIELDED,
+      availableValues: [String(NIGHT_VALUE), String(CUSTOM_UNSHIELDED_VALUE)],
+      pendingValues: ['4200'],
+      registeredFlags: [true, false],
+      appliedId: '5',
+      address: publicKey.address,
+    },
+  );
+
+  // A wallet that has synced past the fork without ever recording a transaction id: the V2 variant starts from an
+  // empty progress rather than none, so `appliedId` is written as zero instead of being left out.
+  const minimal = CoreWallet.withProtocolVersion(
+    CoreWallet.withState(CoreWallet.init(publicKey, NETWORK_ID), UnshieldedState.restore([customUtxo], [])),
+    protocolVersion,
+  );
+  emit('unshielded-minimal', minimal, {
+    networkId: NETWORK_ID,
+    availableValues: [String(CUSTOM_UNSHIELDED_VALUE)],
+    pendingValues: [],
+    appliedId: String(minimal.progress.appliedId),
+  });
+};
+
+// --- dust ---------------------------------------------------------------------------------------
+// `variant` and `protocolVersion` as for the shielded set. The scenario registers for Dust and claims Night on the
+// train's own ledger, so a ledger-v9 train's Dust is generated on ledger-v9 — as it must be, since the v9 fork resets
+// Dust state rather than carrying it.
+const generateDust = async (train, alias, shAlias, { flatDist = false, variant = 'v1', protocolVersion } = {}) => {
+  const L = await ledgerFor(alias);
+  const prefix = flatDist ? '' : `${variant}/`;
   const CW = await loadDist(alias, `${prefix}${flatDist ? 'DustCoreWallet' : 'CoreWallet'}.js`);
   const CoreWallet = flatDist ? CW.DustCoreWallet : CW.CoreWallet;
   const Ser = await loadDist(alias, `${prefix}Serialization.js`);
-  const capability = Ser.makeDefaultV1SerializationCapability();
+  const capability =
+    variant === 'v2' ? Ser.makeDefaultV2SerializationCapability() : Ser.makeDefaultV1SerializationCapability();
   // Shielded alias passed explicitly (see generateUnshieldedSet) — the scenario uses its ledger.
   const { scenario } = await scenarioFor(shAlias, false);
 
@@ -299,11 +401,12 @@ const generateDust = async (train, alias, shAlias, { flatDist = false } = {}) =>
   const empty = CoreWallet.initEmpty(params, dustKey, NETWORK_ID);
   // Sync-path drift across trains: T1 has an instance-method applyEvents on a class; T2/T3 a
   // static applyEvents; T4/T6 applyEventsWithChanges returning [wallet, changes].
-  const synced = flatDist
+  const replayed = flatDist
     ? empty.applyEvents(dustKey, events, scenario.finalTime)
     : typeof CoreWallet.applyEvents === 'function'
       ? CoreWallet.applyEvents(empty, dustKey, events, scenario.finalTime)
       : CoreWallet.applyEventsWithChanges(empty, dustKey, events, scenario.finalTime)[0];
+  const synced = protocolVersion === undefined ? replayed : CoreWallet.withProtocolVersion(replayed, protocolVersion);
 
   const utxoCount = synced.state.utxos.length;
   if (utxoCount !== 1) throw new Error(`${alias}: expected 1 generated dust UTXO, got ${utxoCount}`);
@@ -401,6 +504,112 @@ const generateTxHistory = async (train, absAlias, faAlias) => {
       statuses: entries.map((e) => e.status),
       fees: [String(1234n), null, undefined],
       identifiersPresent: [true, true, false],
+    },
+    serialized,
+  });
+};
+
+// The `v2` history, as the 5.0 train writes it: an envelope around entries that each carry a lifecycle. Entries go in
+// through the three lifecycle writers that release introduced, so the payload holds every lifecycle a 5.0 wallet can
+// store — not only `finalized`, the one lifecycle a `v1` history could ever hold.
+const generateTxHistoryV2 = async (train, absAlias, faAlias) => {
+  const abs = await loadDist(absAlias, 'index.js');
+  const fa = await loadDist(faAlias, 'index.js');
+  const storage = new abs.InMemoryTransactionHistoryStorage(fa.WalletEntrySchema, fa.mergeWalletEntries);
+
+  const finalizedBlock = { hash: 'f0'.repeat(32), height: 4321, timestamp: FIXED_DATE };
+  const writes = [
+    {
+      lifecycle: 'finalized',
+      write: (entry) => storage.gotFinalized({ ...entry, finalizedBlock }),
+      entry: {
+        hash: 'c0'.repeat(32),
+        protocolVersion: 1,
+        status: 'SUCCESS',
+        identifiers: ['identifier-1', 'identifier-2'],
+        timestamp: FIXED_DATE,
+        fees: 1234n,
+        shielded: {
+          receivedCoins: [{ type: TOKEN_A, nonce: 'ab'.repeat(32), value: 100n, mtIndex: 0n }],
+          spentCoins: [{ type: TOKEN_A, nonce: 'cd'.repeat(32), value: 250n, mtIndex: 1n }],
+        },
+      },
+    },
+    {
+      lifecycle: 'finalized',
+      write: (entry) => storage.gotFinalized({ ...entry, finalizedBlock }),
+      entry: {
+        hash: 'd1'.repeat(32),
+        protocolVersion: 1,
+        status: 'FAILURE',
+        identifiers: ['identifier-3'],
+        timestamp: FIXED_DATE,
+        fees: null,
+        unshielded: {
+          id: 7,
+          createdUtxos: [
+            {
+              value: 1000n,
+              owner: 'owner-address',
+              tokenType: CUSTOM_UNSHIELDED,
+              intentHash: '55'.repeat(32),
+              outputIndex: 0,
+            },
+          ],
+          spentUtxos: [],
+        },
+      },
+    },
+    {
+      lifecycle: 'pending',
+      write: (entry) => storage.gotPending({ ...entry, submittedAt: FIXED_DATE }),
+      entry: {
+        hash: 'e2'.repeat(32),
+        identifiers: ['identifier-4'],
+        dust: {
+          receivedUtxos: [{ initialValue: 0n, nonce: 42n, seq: 0, backingNight: '66'.repeat(32), mtIndex: 0n }],
+          spentUtxos: [],
+        },
+      },
+    },
+    {
+      lifecycle: 'rejected',
+      write: (entry) => storage.gotRejected({ ...entry, rejectedAt: FIXED_DATE, reason: 'fixture: rejected by node' }),
+      entry: { hash: 'f3'.repeat(32), identifiers: ['identifier-5'] },
+    },
+  ];
+  for (const { write, entry } of writes) {
+    await write(entry);
+  }
+  const serialized = await storage.serialize();
+
+  const restored = await abs.InMemoryTransactionHistoryStorage.restore(
+    serialized,
+    fa.WalletEntrySchema,
+    fa.mergeWalletEntries,
+  ).getAll();
+  const lifecycles = restored.map((entry) => entry.lifecycle.status);
+  if (JSON.stringify(lifecycles) !== JSON.stringify(writes.map((w) => w.lifecycle))) {
+    throw new Error(`${absAlias} tx-history self-check: lifecycles came back as ${JSON.stringify(lifecycles)}`);
+  }
+  console.log(`  self-check OK: ${absAlias} tx-history (${restored.length} entries)`);
+
+  writeFixture(train, 'tx-history', {
+    train,
+    ...pkgMeta(absAlias),
+    schemaFrom: pkgMeta(faAlias),
+    expected: {
+      entryCount: writes.length,
+      hashes: writes.map((w) => w.entry.hash),
+      // A pending or rejected entry has not run, so it has no status and no fee. JSON cannot hold `undefined` in an
+      // array — it writes `null` — so their absence is recorded by name, apart from the explicit `null` fee of the
+      // second entry.
+      statuses: writes.map((w) => w.entry.status ?? 'absent'),
+      fees: writes.map((w) =>
+        w.entry.fees === undefined ? 'absent' : w.entry.fees === null ? null : String(w.entry.fees),
+      ),
+      identifiersPresent: [true, true, true, true],
+      lifecycles: writes.map((w) => w.lifecycle),
     },
     serialized,
   });
@@ -572,23 +781,46 @@ const TRAINS = [
     fa: 'fa-4.1.0',
     cap: 'cap-3.3.1',
   },
+  // The first ledger-v9 train, written by its V2 variant. Its pending-transaction format is the `v1` that every train
+  // before it froze, so it is not regenerated here.
+  {
+    train: 'facade-5.0.0-rc.1',
+    variant: 'v2',
+    sh: 'sh-4.0.0-rc.1',
+    un: 'un-4.0.0-rc.1',
+    du: 'du-5.0.0-rc.1',
+    shieldedFamily: 'withChanges',
+    abs: 'abs-3.0.0-rc.1',
+    fa: 'fa-5.0.0-rc.1',
+  },
 ];
 
 // ONLY=<surface>[,<surface>] regenerates one surface's fixtures and leaves every other frozen file untouched. Published
 // fixtures are a record; nothing here should rewrite one that is not the reason the generator was run.
 const only = new Set((process.env['ONLY'] ?? 'shielded,unshielded,dust,tx-history,pending-transactions').split(','));
 const wants = (surface) => only.has(surface);
+// TRAIN=<train>[,<train>] limits a run to those trains, for the same reason.
+const onlyTrains = process.env['TRAIN'] === undefined ? undefined : new Set(process.env['TRAIN'].split(','));
 
-for (const t of TRAINS) {
+for (const t of TRAINS.filter((train) => onlyTrains === undefined || onlyTrains.has(train.train))) {
   console.log(`\n=== ${t.train}`);
-  if (wants('shielded')) await generateShieldedSet(t.train, t.sh, { family: t.shieldedFamily });
-  if (wants('unshielded')) await generateUnshieldedSet(t.train, t.un);
-  if (wants('dust')) await generateDust(t.train, t.du, t.sh, { flatDist: t.dustFlat === true });
-  if (wants('tx-history') && t.abs) await generateTxHistory(t.train, t.abs, t.fa);
+  const v2 = t.variant === 'v2';
+  // The version a V2 wallet records once it has synced on a chain running ledger-v9, read from the train's own
+  // abstractions rather than restated here.
+  const protocolVersion = v2 ? (await loadDist(t.abs, 'index.js')).ProtocolVersion.V9NativeForkVersion : undefined;
+  const variant = { variant: t.variant ?? 'v1', protocolVersion };
+  if (wants('shielded')) await generateShieldedSet(t.train, t.sh, { family: t.shieldedFamily, ...variant });
+  if (wants('unshielded')) {
+    await (v2 ? generateUnshieldedSetV2(t.train, t.un, variant) : generateUnshieldedSet(t.train, t.un));
+  }
+  if (wants('dust')) await generateDust(t.train, t.du, t.sh, { flatDist: t.dustFlat === true, ...variant });
+  if (wants('tx-history') && t.abs) {
+    await (v2 ? generateTxHistoryV2 : generateTxHistory)(t.train, t.abs, t.fa);
+  }
   if (wants('pending-transactions') && t.cap) await generatePendingTransactions(t.train, t.cap, t.sh);
 }
 
-if (wants('shielded')) {
+if (wants('shielded') && onlyTrains === undefined) {
   console.log('\n=== MPT canonicity sweep (v7.0.2 → v8.0.3)');
   await mptSweep();
 }
